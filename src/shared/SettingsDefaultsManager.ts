@@ -27,6 +27,8 @@ export interface SettingsDefaults {
   CLAUDE_MEM_GEMINI_CLI_MODEL: string;  // Gemini CLI model selection
   CLAUDE_MEM_GEMINI_CLI_SESSION_TTL: string;  // Session time-to-live (e.g., '24h', '1d', '7d')
   CLAUDE_MEM_GEMINI_CLI_MAX_SESSIONS: string;  // Maximum number of sessions to retain
+  CLAUDE_MEM_GEMINI_CLI_MAX_CONCURRENT_PROCESSES: string;  // Max concurrent Gemini CLI processes
+  CLAUDE_MEM_GEMINI_CLI_PER_SESSION_BATCH_SIZE: string;  // Messages processed concurrently per session
   CLAUDE_MEM_OPENROUTER_API_KEY: string;
   CLAUDE_MEM_OPENROUTER_MODEL: string;
   CLAUDE_MEM_OPENROUTER_SITE_URL: string;
@@ -39,6 +41,7 @@ export interface SettingsDefaults {
   CLAUDE_MEM_PYTHON_VERSION: string;
   CLAUDE_CODE_PATH: string;
   CLAUDE_MEM_MODE: string;
+  CLAUDE_MEM_STARTUP_SESSION_DELAY_MS: string;  // Delay between session startups (0 = no delay)
   // Token Economics
   CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS: string;
   CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS: string;
@@ -78,6 +81,8 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_GEMINI_CLI_MODEL: 'gemini-2.5-flash',  // Balanced default for CLI
     CLAUDE_MEM_GEMINI_CLI_SESSION_TTL: '24h',  // Keep sessions for 24 hours
     CLAUDE_MEM_GEMINI_CLI_MAX_SESSIONS: '100',  // Keep max 100 sessions
+    CLAUDE_MEM_GEMINI_CLI_MAX_CONCURRENT_PROCESSES: '10',  // Max concurrent Gemini CLI processes
+    CLAUDE_MEM_GEMINI_CLI_PER_SESSION_BATCH_SIZE: '3',  // Messages processed concurrently per session
     CLAUDE_MEM_OPENROUTER_API_KEY: '',  // Empty by default, can be set via UI or env
     CLAUDE_MEM_OPENROUTER_MODEL: 'xiaomi/mimo-v2-flash:free',  // Default OpenRouter model (free tier)
     CLAUDE_MEM_OPENROUTER_SITE_URL: '',  // Optional: for OpenRouter analytics
@@ -90,6 +95,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_PYTHON_VERSION: '3.13',
     CLAUDE_CODE_PATH: '', // Empty means auto-detect via 'which claude'
     CLAUDE_MEM_MODE: 'code', // Default mode profile
+    CLAUDE_MEM_STARTUP_SESSION_DELAY_MS: '0',  // No delay between session startups
     // Token Economics
     CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS: 'true',
     CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS: 'true',

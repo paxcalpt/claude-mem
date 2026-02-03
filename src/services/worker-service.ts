@@ -10,6 +10,7 @@
  */
 
 import path from 'path';
+import { homedir } from 'os';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { getWorkerPort, getWorkerHost } from '../shared/worker-utils.js';
@@ -392,6 +393,13 @@ export class WorkerService {
 
     if (orphanedSessionIds.length === 0) return result;
 
+    // Load startup delay setting once
+    const { SettingsDefaultsManager } = await import('../shared/SettingsDefaultsManager.js');
+    const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
+    const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
+    const delayMs = parseInt(settings.CLAUDE_MEM_STARTUP_SESSION_DELAY_MS, 10) || 0;
+
+    const startupStartTime = Date.now();
     logger.info('SYSTEM', `Processing up to ${sessionLimit} of ${orphanedSessionIds.length} pending session queues`);
 
     for (const sessionDbId of orphanedSessionIds) {
@@ -414,12 +422,27 @@ export class WorkerService {
         result.sessionsStarted++;
         result.startedSessionIds.push(sessionDbId);
 
-        await new Promise(resolve => setTimeout(resolve, 100));
+        // Configurable delay between session startups (default: 0ms = no delay)
+        if (delayMs > 0) {
+          await new Promise(resolve => setTimeout(resolve, delayMs));
+        }
       } catch (error) {
         logger.error('SYSTEM', `Failed to process session ${sessionDbId}`, {}, error as Error);
         result.sessionsSkipped++;
       }
     }
+
+    // Log startup completion metrics
+    const startupDuration = Date.now() - startupStartTime;
+    logger.success('SYSTEM', 'Startup queue processing complete', {
+      totalPendingSessions: result.totalPendingSessions,
+      sessionsStarted: result.sessionsStarted,
+      sessionsSkipped: result.sessionsSkipped,
+      duration: `${(startupDuration / 1000).toFixed(2)}s`,
+      avgTimePerSession: result.sessionsStarted > 0
+        ? `${(startupDuration / result.sessionsStarted).toFixed(0)}ms`
+        : 'N/A'
+    });
 
     return result;
   }

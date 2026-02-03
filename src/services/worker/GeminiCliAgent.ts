@@ -20,6 +20,7 @@ import { buildInitPrompt, buildObservationPrompt, buildSummaryPrompt, buildConti
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import type { ActiveSession } from '../worker-types.js';
 import { ModeManager } from '../domain/ModeManager.js';
+import { registerProcess, unregisterProcess } from './ProcessRegistry.js';
 import {
   processAgentResponse,
   shouldFallbackToClaude,
@@ -34,10 +35,19 @@ export class GeminiCliAgent {
   private fallbackAgent: FallbackAgent | null = null;
   // Track Gemini CLI session UUIDs for session reuse
   private geminiSessionIds: Map<string, string> = new Map(); // memorySessionId -> gemini session_id
+  // Concurrency control to prevent resource exhaustion
+  private concurrencyLimit: number;
+  private activeProcesses = 0;
+  private queuedRequests: Array<() => void> = [];
 
   constructor(dbManager: DatabaseManager, sessionManager: SessionManager) {
     this.dbManager = dbManager;
     this.sessionManager = sessionManager;
+
+    // Load concurrency limit from settings
+    const settingsPath = path.join(homedir(), '.claude-mem', 'settings.json');
+    const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
+    this.concurrencyLimit = parseInt(settings.CLAUDE_MEM_GEMINI_CLI_MAX_CONCURRENT_PROCESSES, 10) || 10;
   }
 
   /**
@@ -46,6 +56,37 @@ export class GeminiCliAgent {
    */
   setFallbackAgent(agent: FallbackAgent): void {
     this.fallbackAgent = agent;
+  }
+
+  /**
+   * Acquire a process slot before spawning Gemini CLI
+   * Implements concurrency limiting to prevent resource exhaustion
+   */
+  private async acquireProcessSlot(): Promise<void> {
+    if (this.activeProcesses < this.concurrencyLimit) {
+      this.activeProcesses++;
+      return;
+    }
+
+    // Wait for slot to become available
+    return new Promise(resolve => {
+      this.queuedRequests.push(resolve);
+    });
+  }
+
+  /**
+   * Release a process slot after Gemini CLI completes
+   * Processes next queued request if any
+   */
+  private releaseProcessSlot(): void {
+    this.activeProcesses--;
+
+    // Process next queued request
+    const next = this.queuedRequests.shift();
+    if (next) {
+      this.activeProcesses++;
+      next();
+    }
   }
 
   /**
@@ -95,7 +136,7 @@ export class GeminiCliAgent {
 
       // Add to conversation history and query Gemini CLI with full context
       session.conversationHistory.push({ role: 'user', content: initPrompt });
-      const initResponse = await this.queryGeminiCliWithRetry(session.conversationHistory, cliPath, model);
+      const initResponse = await this.queryGeminiCliWithRetry(session.conversationHistory, cliPath, model, session.sessionDbId);
 
       if (initResponse.content) {
         // Add response to conversation history
@@ -155,7 +196,7 @@ export class GeminiCliAgent {
 
           // Add to conversation history and query Gemini CLI with full context
           session.conversationHistory.push({ role: 'user', content: obsPrompt });
-          const obsResponse = await this.queryGeminiCliWithRetry(session.conversationHistory, cliPath, model);
+          const obsResponse = await this.queryGeminiCliWithRetry(session.conversationHistory, cliPath, model, session.sessionDbId);
 
           let tokensUsed = 0;
           if (obsResponse.content) {
@@ -192,7 +233,7 @@ export class GeminiCliAgent {
 
           // Add to conversation history and query Gemini CLI with full context
           session.conversationHistory.push({ role: 'user', content: summaryPrompt });
-          const summaryResponse = await this.queryGeminiCliWithRetry(session.conversationHistory, cliPath, model);
+          const summaryResponse = await this.queryGeminiCliWithRetry(session.conversationHistory, cliPath, model, session.sessionDbId);
 
           let tokensUsed = 0;
           if (summaryResponse.content) {
@@ -224,7 +265,18 @@ export class GeminiCliAgent {
       logger.success('SDK', 'Gemini CLI agent completed', {
         sessionId: session.sessionDbId,
         duration: `${(sessionDuration / 1000).toFixed(1)}s`,
-        historyLength: session.conversationHistory.length
+        historyLength: session.conversationHistory.length,
+        inputTokens: session.cumulativeInputTokens,
+        outputTokens: session.cumulativeOutputTokens,
+        totalTokens: session.cumulativeInputTokens + session.cumulativeOutputTokens
+      });
+
+      // Log final concurrency stats
+      logger.info('SDK', 'Gemini CLI concurrency stats at session end', {
+        sessionId: session.sessionDbId,
+        activeProcesses: this.activeProcesses,
+        queuedRequests: this.queuedRequests.length,
+        concurrencyLimit: this.concurrencyLimit
       });
 
     } catch (error: unknown) {
@@ -301,11 +353,12 @@ export class GeminiCliAgent {
     history: { role: 'user' | 'assistant'; content: string }[],
     cliPath: string,
     model: string,
+    sessionDbId: number,
     maxRetries: number = 3
   ): Promise<{ content: string; tokensUsed?: number; inputTokens?: number; outputTokens?: number }> {
     for (let attempt = 0; attempt < maxRetries; attempt++) {
       try {
-        return await this.queryGeminiCli(history, cliPath, model);
+        return await this.queryGeminiCli(history, cliPath, model, sessionDbId);
       } catch (error) {
         const isRateLimit = error instanceof Error && error.message.includes('RATE_LIMIT');
 
@@ -329,13 +382,19 @@ export class GeminiCliAgent {
   private async queryGeminiCli(
     history: { role: 'user' | 'assistant'; content: string }[],
     cliPath: string,
-    model: string
+    model: string,
+    sessionDbId: number
   ): Promise<{ content: string; tokensUsed?: number; inputTokens?: number; outputTokens?: number }> {
+    // Acquire process slot to enforce concurrency limit
+    await this.acquireProcessSlot();
+
     const totalChars = history.reduce((sum, m) => sum + m.content.length, 0);
 
     logger.debug('SDK', `Querying Gemini CLI (${model})`, {
       turns: history.length,
-      totalChars
+      totalChars,
+      activeProcesses: this.activeProcesses,
+      queuedRequests: this.queuedRequests.length
     });
 
     // Truncate history to prevent CLI argument overflow
@@ -350,53 +409,68 @@ export class GeminiCliAgent {
       })
       .join('\n\n');
 
-    return new Promise((resolve, reject) => {
-      // Use -p flag for inline prompt with JSON output format
-      const args = [
-        '-p', conversationText,
-        '--output-format', 'json',
-        '-m', model
-      ];
+    try {
+      return await new Promise((resolve, reject) => {
+        // Use -p flag for inline prompt with JSON output format
+        const args = [
+          '-p', conversationText,
+          '--output-format', 'json',
+          '-m', model
+        ];
 
-      // TODO: Session resumption optimization
-      // The Gemini CLI supports --resume flag to continue previous sessions,
-      // which would enable automatic context caching and reduce token costs by 50-90%.
-      // Implementation requires:
-      // 1. Store session_id from first response in geminiSessionIds map
-      // 2. Use --resume flag with stored session on subsequent queries
-      // 3. Handle session expiration/cleanup
-      // However, --resume works with session index numbers (not UUIDs) which change
-      // as new sessions are created, making reliable session tracking complex.
-      // For now, rely on Gemini's implicit caching of similar prompts.
+        // TODO: Session resumption optimization
+        // The Gemini CLI supports --resume flag to continue previous sessions,
+        // which would enable automatic context caching and reduce token costs by 50-90%.
+        // Implementation requires:
+        // 1. Store session_id from first response in geminiSessionIds map
+        // 2. Use --resume flag with stored session on subsequent queries
+        // 3. Handle session expiration/cleanup
+        // However, --resume works with session index numbers (not UUIDs) which change
+        // as new sessions are created, making reliable session tracking complex.
+        // For now, rely on Gemini's implicit caching of similar prompts.
 
-      const child = spawn(cliPath, args, {
-        stdio: ['pipe', 'pipe', 'pipe']
-      });
+        const child = spawn(cliPath, args, {
+          stdio: ['pipe', 'pipe', 'pipe']
+        });
 
-      let stdout = '';
-      let stderr = '';
-
-      child.stdout.on('data', (data) => {
-        stdout += data.toString();
-      });
-
-      child.stderr.on('data', (data) => {
-        stderr += data.toString();
-      });
-
-      child.on('error', (error) => {
-        logger.error('SDK', 'Gemini CLI process error', {}, error);
-        reject(new Error(`Gemini CLI error: ${error.message}`));
-      });
-
-      child.on('close', (code) => {
-        // Check for rate limit errors in stdout/stderr
-        const output = stdout + stderr;
-        if (output.includes('exhausted your capacity') || output.includes('quota') || output.includes('rate limit')) {
-          logger.warn('SDK', 'Gemini CLI rate limited, will retry', { model });
-          reject(new Error('RATE_LIMIT: Gemini CLI rate limited'));
-          return;
+        // Register process in ProcessRegistry for proper cleanup tracking
+        if (child.pid) {
+          registerProcess(child.pid, sessionDbId, child);
         }
+
+        let stdout = '';
+        let stderr = '';
+
+        child.stdout.on('data', (data) => {
+          stdout += data.toString();
+        });
+
+        child.stderr.on('data', (data) => {
+          stderr += data.toString();
+        });
+
+        child.on('error', (error) => {
+          logger.error('SDK', 'Gemini CLI process error', {}, error);
+          // Unregister on error
+          if (child.pid) {
+            unregisterProcess(child.pid);
+          }
+          reject(new Error(`Gemini CLI error: ${error.message}`));
+        });
+
+        child.on('close', (code) => {
+          // Unregister process on close
+          if (child.pid) {
+            unregisterProcess(child.pid);
+          }
+
+          // Check for rate limit errors in stdout/stderr
+          const output = stdout + stderr;
+          if (output.includes('exhausted your capacity') || output.includes('quota') || output.includes('rate limit')) {
+            logger.warn('SDK', 'Gemini CLI rate limited, will retry', { model });
+            reject(new Error('RATE_LIMIT: Gemini CLI rate limited'));
+            return;
+          }
 
         // Check if stderr only contains deprecation warnings (not real errors)
         const hasOnlyWarnings = stderr.trim() &&
@@ -466,9 +540,13 @@ export class GeminiCliAgent {
         }
       });
 
-      // Close stdin (no input needed with -p flag)
-      child.stdin.end();
-    });
+        // Close stdin (no input needed with -p flag)
+        child.stdin.end();
+      });
+    } finally {
+      // Always release process slot, even if spawn fails
+      this.releaseProcessSlot();
+    }
   }
 
   /**
