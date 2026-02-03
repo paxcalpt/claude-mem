@@ -414,14 +414,15 @@ export function ContextSettingsModal({
             >
               <FormField
                 label="AI Provider"
-                tooltip="Choose between Claude (via Agent SDK) or Gemini (via REST API)"
+                tooltip="Choose between Claude (Agent SDK), Gemini (REST API), Gemini CLI (Google auth), or OpenRouter"
               >
                 <select
                   value={formState.CLAUDE_MEM_PROVIDER || 'claude'}
                   onChange={(e) => updateSetting('CLAUDE_MEM_PROVIDER', e.target.value)}
                 >
                   <option value="claude">Claude (uses your Claude account)</option>
-                  <option value="gemini">Gemini (uses API key)</option>
+                  <option value="gemini">Gemini (REST API, requires API key)</option>
+                  <option value="gemini-cli">Gemini CLI (Google account auth)</option>
                   <option value="openrouter">OpenRouter (multi-model)</option>
                 </select>
               </FormField>
@@ -476,6 +477,76 @@ export function ContextSettingsModal({
                       checked={formState.CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED === 'true'}
                       onChange={(checked) => updateSetting('CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED', checked ? 'true' : 'false')}
                     />
+                  </div>
+                </>
+              )}
+
+              {formState.CLAUDE_MEM_PROVIDER === 'gemini-cli' && (
+                <>
+                  <FormField
+                    label="Gemini CLI Path"
+                    tooltip="Path to gemini executable (leave empty for auto-detect via PATH)"
+                  >
+                    <input
+                      type="text"
+                      value={formState.CLAUDE_MEM_GEMINI_CLI_PATH || ''}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_GEMINI_CLI_PATH', e.target.value)}
+                      placeholder="Auto-detect via PATH"
+                    />
+                  </FormField>
+                  <FormField
+                    label="Model"
+                    tooltip="Gemini model to use for generating observations"
+                  >
+                    <select
+                      value={formState.CLAUDE_MEM_GEMINI_CLI_MODEL || 'gemini-2.5-flash'}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_GEMINI_CLI_MODEL', e.target.value)}
+                    >
+                      <option value="gemini-2.5-flash-lite">Flash Lite (fastest)</option>
+                      <option value="gemini-2.5-flash">Flash (balanced)</option>
+                      <option value="gemini-3-flash-preview">3.0 Flash Preview</option>
+                      <option value="gemini-3-pro-preview">3.0 Pro Preview</option>
+                      <option value="gemini-2.5-pro">2.5 Pro</option>
+                      <option value="gemini-2.5-thinking-exp">Thinking (experimental)</option>
+                    </select>
+                  </FormField>
+                  <FormField
+                    label="Session Cache TTL"
+                    tooltip="How long to keep cached sessions (reduces token costs by 90% on repeated context)"
+                  >
+                    <select
+                      value={formState.CLAUDE_MEM_GEMINI_CLI_SESSION_TTL || '24h'}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_GEMINI_CLI_SESSION_TTL', e.target.value)}
+                    >
+                      <option value="1h">1 hour</option>
+                      <option value="6h">6 hours</option>
+                      <option value="12h">12 hours</option>
+                      <option value="24h">24 hours (recommended)</option>
+                      <option value="2d">2 days</option>
+                      <option value="7d">7 days</option>
+                    </select>
+                  </FormField>
+                  <FormField
+                    label="Max Cached Sessions"
+                    tooltip="Maximum number of sessions to keep cached (prevents disk bloat)"
+                  >
+                    <select
+                      value={formState.CLAUDE_MEM_GEMINI_CLI_MAX_SESSIONS || '100'}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_GEMINI_CLI_MAX_SESSIONS', e.target.value)}
+                    >
+                      <option value="50">50 sessions</option>
+                      <option value="100">100 sessions (recommended)</option>
+                      <option value="200">200 sessions</option>
+                      <option value="500">500 sessions</option>
+                      <option value="1000">1000 sessions</option>
+                    </select>
+                  </FormField>
+                  <div style={{ marginTop: '12px', padding: '12px', backgroundColor: 'rgba(59, 130, 246, 0.1)', borderRadius: '6px', fontSize: '13px', color: '#93c5fd' }}>
+                    <div style={{ marginBottom: '8px', fontWeight: '600' }}>Installation:</div>
+                    <code style={{ display: 'block', marginBottom: '4px' }}>npm install -g @google/generative-ai</code>
+                    <div style={{ marginTop: '8px', fontSize: '12px', opacity: 0.8 }}>
+                      Uses Google account authentication (no API key needed)
+                    </div>
                   </div>
                 </>
               )}

@@ -13,6 +13,7 @@ import { SessionManager } from '../../SessionManager.js';
 import { DatabaseManager } from '../../DatabaseManager.js';
 import { SDKAgent } from '../../SDKAgent.js';
 import { GeminiAgent, isGeminiSelected, isGeminiAvailable } from '../../GeminiAgent.js';
+import { GeminiCliAgent, isGeminiCliSelected, isGeminiCliAvailable } from '../../GeminiCliAgent.js';
 import { OpenRouterAgent, isOpenRouterSelected, isOpenRouterAvailable } from '../../OpenRouterAgent.js';
 import type { WorkerService } from '../../../worker-service.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
@@ -30,6 +31,7 @@ export class SessionRoutes extends BaseRouteHandler {
     private dbManager: DatabaseManager,
     private sdkAgent: SDKAgent,
     private geminiAgent: GeminiAgent,
+    private geminiCliAgent: GeminiCliAgent,
     private openRouterAgent: OpenRouterAgent,
     private eventBroadcaster: SessionEventBroadcaster,
     private workerService: WorkerService
@@ -48,7 +50,7 @@ export class SessionRoutes extends BaseRouteHandler {
    * Note: Session linking via contentSessionId allows provider switching mid-session.
    * The conversationHistory on ActiveSession maintains context across providers.
    */
-  private getActiveAgent(): SDKAgent | GeminiAgent | OpenRouterAgent {
+  private getActiveAgent(): SDKAgent | GeminiAgent | GeminiCliAgent | OpenRouterAgent {
     if (isOpenRouterSelected()) {
       if (isOpenRouterAvailable()) {
         logger.debug('SESSION', 'Using OpenRouter agent');
@@ -57,6 +59,16 @@ export class SessionRoutes extends BaseRouteHandler {
         throw new Error('OpenRouter provider selected but no API key configured. Set CLAUDE_MEM_OPENROUTER_API_KEY in settings or OPENROUTER_API_KEY environment variable.');
       }
     }
+
+    if (isGeminiCliSelected()) {
+      if (isGeminiCliAvailable()) {
+        logger.debug('SESSION', 'Using Gemini CLI agent');
+        return this.geminiCliAgent;
+      } else {
+        throw new Error('Gemini CLI provider selected but CLI not available. Install Gemini CLI or check CLAUDE_MEM_GEMINI_CLI_PATH in settings.');
+      }
+    }
+
     if (isGeminiSelected()) {
       if (isGeminiAvailable()) {
         logger.debug('SESSION', 'Using Gemini agent');
@@ -71,9 +83,12 @@ export class SessionRoutes extends BaseRouteHandler {
   /**
    * Get the currently selected provider name
    */
-  private getSelectedProvider(): 'claude' | 'gemini' | 'openrouter' {
+  private getSelectedProvider(): 'claude' | 'gemini' | 'gemini-cli' | 'openrouter' {
     if (isOpenRouterSelected() && isOpenRouterAvailable()) {
       return 'openrouter';
+    }
+    if (isGeminiCliSelected() && isGeminiCliAvailable()) {
+      return 'gemini-cli';
     }
     return (isGeminiSelected() && isGeminiAvailable()) ? 'gemini' : 'claude';
   }
@@ -117,13 +132,25 @@ export class SessionRoutes extends BaseRouteHandler {
    */
   private startGeneratorWithProvider(
     session: ReturnType<typeof this.sessionManager.getSession>,
-    provider: 'claude' | 'gemini' | 'openrouter',
+    provider: 'claude' | 'gemini' | 'gemini-cli' | 'openrouter',
     source: string
   ): void {
     if (!session) return;
 
-    const agent = provider === 'openrouter' ? this.openRouterAgent : (provider === 'gemini' ? this.geminiAgent : this.sdkAgent);
-    const agentName = provider === 'openrouter' ? 'OpenRouter' : (provider === 'gemini' ? 'Gemini' : 'Claude SDK');
+    const agent = provider === 'openrouter'
+      ? this.openRouterAgent
+      : provider === 'gemini-cli'
+        ? this.geminiCliAgent
+        : provider === 'gemini'
+          ? this.geminiAgent
+          : this.sdkAgent;
+    const agentName = provider === 'openrouter'
+      ? 'OpenRouter'
+      : provider === 'gemini-cli'
+        ? 'Gemini CLI'
+        : provider === 'gemini'
+          ? 'Gemini'
+          : 'Claude SDK';
 
     logger.info('SESSION', `Generator auto-starting (${source}) using ${agentName}`, {
       sessionId: session.sessionDbId,

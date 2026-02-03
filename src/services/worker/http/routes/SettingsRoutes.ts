@@ -94,6 +94,11 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_GEMINI_API_KEY',
       'CLAUDE_MEM_GEMINI_MODEL',
       'CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED',
+      // Gemini CLI Configuration
+      'CLAUDE_MEM_GEMINI_CLI_PATH',
+      'CLAUDE_MEM_GEMINI_CLI_MODEL',
+      'CLAUDE_MEM_GEMINI_CLI_SESSION_TTL',
+      'CLAUDE_MEM_GEMINI_CLI_MAX_SESSIONS',
       // OpenRouter Configuration
       'CLAUDE_MEM_OPENROUTER_API_KEY',
       'CLAUDE_MEM_OPENROUTER_MODEL',
@@ -233,9 +238,9 @@ export class SettingsRoutes extends BaseRouteHandler {
   private validateSettings(settings: any): { valid: boolean; error?: string } {
     // Validate CLAUDE_MEM_PROVIDER
     if (settings.CLAUDE_MEM_PROVIDER) {
-    const validProviders = ['claude', 'gemini', 'openrouter'];
+    const validProviders = ['claude', 'gemini', 'gemini-cli', 'openrouter'];
     if (!validProviders.includes(settings.CLAUDE_MEM_PROVIDER)) {
-      return { valid: false, error: 'CLAUDE_MEM_PROVIDER must be "claude", "gemini", or "openrouter"' };
+      return { valid: false, error: 'CLAUDE_MEM_PROVIDER must be "claude", "gemini", "gemini-cli", or "openrouter"' };
       }
     }
 

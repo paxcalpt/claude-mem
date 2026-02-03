@@ -53,6 +53,7 @@ import { SessionManager } from './worker/SessionManager.js';
 import { SSEBroadcaster } from './worker/SSEBroadcaster.js';
 import { SDKAgent } from './worker/SDKAgent.js';
 import { GeminiAgent } from './worker/GeminiAgent.js';
+import { GeminiCliAgent } from './worker/GeminiCliAgent.js';
 import { OpenRouterAgent } from './worker/OpenRouterAgent.js';
 import { PaginationHelper } from './worker/PaginationHelper.js';
 import { SettingsManager } from './worker/SettingsManager.js';
@@ -112,6 +113,7 @@ export class WorkerService {
   private sseBroadcaster: SSEBroadcaster;
   private sdkAgent: SDKAgent;
   private geminiAgent: GeminiAgent;
+  private geminiCliAgent: GeminiCliAgent;
   private openRouterAgent: OpenRouterAgent;
   private paginationHelper: PaginationHelper;
   private settingsManager: SettingsManager;
@@ -139,11 +141,17 @@ export class WorkerService {
     this.sseBroadcaster = new SSEBroadcaster();
     this.sdkAgent = new SDKAgent(this.dbManager, this.sessionManager);
     this.geminiAgent = new GeminiAgent(this.dbManager, this.sessionManager);
+    this.geminiCliAgent = new GeminiCliAgent(this.dbManager, this.sessionManager);
     this.openRouterAgent = new OpenRouterAgent(this.dbManager, this.sessionManager);
 
     this.paginationHelper = new PaginationHelper(this.dbManager);
     this.settingsManager = new SettingsManager(this.dbManager);
     this.sessionEventBroadcaster = new SessionEventBroadcaster(this.sseBroadcaster, this);
+
+    // Set fallback agents (non-Claude agents fall back to Claude SDK on errors)
+    this.geminiAgent.setFallbackAgent(this.sdkAgent);
+    this.geminiCliAgent.setFallbackAgent(this.sdkAgent);
+    this.openRouterAgent.setFallbackAgent(this.sdkAgent);
 
     // Set callback for when sessions are deleted
     this.sessionManager.setOnSessionDeleted(() => {
@@ -195,7 +203,7 @@ export class WorkerService {
   private registerRoutes(): void {
     // Standard routes
     this.server.registerRoutes(new ViewerRoutes(this.sseBroadcaster, this.dbManager, this.sessionManager));
-    this.server.registerRoutes(new SessionRoutes(this.sessionManager, this.dbManager, this.sdkAgent, this.geminiAgent, this.openRouterAgent, this.sessionEventBroadcaster, this));
+    this.server.registerRoutes(new SessionRoutes(this.sessionManager, this.dbManager, this.sdkAgent, this.geminiAgent, this.geminiCliAgent, this.openRouterAgent, this.sessionEventBroadcaster, this));
     this.server.registerRoutes(new DataRoutes(this.paginationHelper, this.dbManager, this.sessionManager, this.sseBroadcaster, this, this.startTime));
     this.server.registerRoutes(new SettingsRoutes(this.settingsManager));
     this.server.registerRoutes(new LogsRoutes());
