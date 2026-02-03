@@ -84,6 +84,54 @@ export class OpenRouterAgent {
    */
   async startSession(session: ActiveSession, worker?: WorkerRef): Promise<void> {
     try {
+      // LOG at INFO level to debug memorySessionId issue
+      logger.info('SESSION', `OpenRouterAgent.startSession ENTRY`, {
+        sessionDbId: session.sessionDbId,
+        hasMemorySessionId: !!session.memorySessionId,
+        memorySessionIdValue: session.memorySessionId ? session.memorySessionId.substring(0, 12) : 'null'
+      });
+
+      // Capture/generate memory session ID if not yet set
+      // OpenRouter (like GeminiCLI) generates its own UUID since it doesn't use Claude SDK
+      // CRITICAL: Always check database FIRST before generating new UUID
+      if (!session.memorySessionId) {
+        // Check if database already has a memorySessionId (from previous sessions)
+        const dbSession = this.dbManager.getSessionStore().getSessionById(session.sessionDbId);
+
+        if (dbSession.memory_session_id) {
+          // Use existing memorySessionId from database
+          session.memorySessionId = dbSession.memory_session_id;
+          logger.info('SESSION', `MEMORY_ID_LOADED_FROM_DB | sessionDbId=${session.sessionDbId} | memorySessionId=${session.memorySessionId}`, {
+            sessionId: session.sessionDbId,
+            memorySessionId: session.memorySessionId
+          });
+        } else {
+          // Generate new UUID only if database doesn't have one
+          const { randomUUID } = await import('crypto');
+          session.memorySessionId = randomUUID();
+
+          // Persist to database for cross-restart recovery
+          this.dbManager.getSessionStore().updateMemorySessionId(
+            session.sessionDbId,
+            session.memorySessionId
+          );
+
+          // Verify the update by reading back from DB
+          const verification = this.dbManager.getSessionStore().getSessionById(session.sessionDbId);
+          const dbVerified = verification?.memory_session_id === session.memorySessionId;
+          logger.info('SESSION', `MEMORY_ID_GENERATED | sessionDbId=${session.sessionDbId} | memorySessionId=${session.memorySessionId} | dbVerified=${dbVerified}`, {
+            sessionId: session.sessionDbId,
+            memorySessionId: session.memorySessionId
+          });
+
+          if (!dbVerified) {
+            logger.error('SESSION', `MEMORY_ID_MISMATCH | sessionDbId=${session.sessionDbId} | expected=${session.memorySessionId} | got=${verification?.memory_session_id}`, {
+              sessionId: session.sessionDbId
+            });
+          }
+        }
+      }
+
       // Get OpenRouter configuration
       const { apiKey, model, siteUrl, appName } = this.getOpenRouterConfig();
 

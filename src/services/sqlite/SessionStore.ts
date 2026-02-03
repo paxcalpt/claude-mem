@@ -1175,9 +1175,23 @@ export class SessionStore {
       VALUES (?, NULL, ?, ?, ?, ?, 'active')
     `).run(contentSessionId, project, userPrompt, now.toISOString(), nowEpoch);
 
-    // Return existing or new ID
-    const row = this.db.prepare('SELECT id FROM sdk_sessions WHERE content_session_id = ?')
-      .get(contentSessionId) as { id: number };
+    // Fetch existing session with project
+    const row = this.db.prepare('SELECT id, project FROM sdk_sessions WHERE content_session_id = ?')
+      .get(contentSessionId) as { id: number; project: string };
+
+    // Update project if it changed (handles sessions created with empty project)
+    // Only update if new project is non-empty and different from current
+    if (project && project !== row.project) {
+      this.db.prepare('UPDATE sdk_sessions SET project = ? WHERE id = ?')
+        .run(project, row.id);
+
+      logger.info('SESSION', 'Updated project for existing session', {
+        sessionId: row.id,
+        oldProject: row.project || '(empty)',
+        newProject: project
+      });
+    }
+
     return row.id;
   }
 

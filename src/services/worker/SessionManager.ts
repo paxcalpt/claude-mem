@@ -22,9 +22,28 @@ export class SessionManager {
   private sessionQueues: Map<number, EventEmitter> = new Map();
   private onSessionDeletedCallback?: () => void;
   private pendingStore: PendingMessageStore | null = null;
+  private cachedProvider: string | null = null;
+  private providerCacheTime: number = 0;
+  private PROVIDER_CACHE_TTL_MS = 5000; // Re-check provider every 5 seconds
 
   constructor(dbManager: DatabaseManager) {
     this.dbManager = dbManager;
+  }
+
+  /**
+   * Get current provider setting (cached for performance)
+   * Returns 'claude', 'gemini', 'gemini-cli', or 'openrouter'
+   */
+  private getCurrentProvider(): string {
+    const now = Date.now();
+    if (!this.cachedProvider || (now - this.providerCacheTime) > this.PROVIDER_CACHE_TTL_MS) {
+      const { SettingsDefaultsManager } = require('../../shared/SettingsDefaultsManager.js');
+      const { USER_SETTINGS_PATH } = require('../../shared/paths.js');
+      const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+      this.cachedProvider = settings.CLAUDE_MEM_PROVIDER || 'claude';
+      this.providerCacheTime = now;
+    }
+    return this.cachedProvider;
   }
 
   /**
@@ -61,12 +80,14 @@ export class SessionManager {
       logger.debug('SESSION', 'Returning cached session', {
         sessionDbId,
         contentSessionId: session.contentSessionId,
-        lastPromptNumber: session.lastPromptNumber
+        lastPromptNumber: session.lastPromptNumber,
+        hasMemorySessionId: !!session.memorySessionId
       });
 
-      // Refresh project from database in case it was updated by new-hook
-      // This fixes the bug where sessions created with empty project get updated
-      // in the database but the in-memory session still has the stale empty value
+      // Refresh project and memorySessionId from database if needed
+      // This fixes bugs where:
+      // 1. Sessions created with empty project get updated in DB but in-memory still has stale value
+      // 2. Non-SDK agents need memorySessionId from DB but in-memory session has null
       const dbSession = this.dbManager.getSessionById(sessionDbId);
       if (dbSession.project && dbSession.project !== session.project) {
         logger.debug('SESSION', 'Updating project from database', {
@@ -75,6 +96,21 @@ export class SessionManager {
           newProject: dbSession.project
         });
         session.project = dbSession.project;
+      }
+
+      // For non-SDK agents, ensure memorySessionId matches database
+      // This handles both null and wrong/stale UUIDs from crash loops
+      const provider = this.getCurrentProvider();
+      if (provider !== 'claude' && dbSession.memory_session_id) {
+        if (session.memorySessionId !== dbSession.memory_session_id) {
+          logger.info('SESSION', 'Correcting memorySessionId from database for cached session', {
+            sessionDbId,
+            provider,
+            oldMemorySessionId: session.memorySessionId || 'null',
+            newMemorySessionId: dbSession.memory_session_id
+          });
+          session.memorySessionId = dbSession.memory_session_id;
+        }
       }
 
       // Update userPrompt for continuation prompts
@@ -132,16 +168,34 @@ export class SessionManager {
       });
     }
 
+    // Determine memorySessionId handling based on provider
+    // For Claude SDK (provider='claude'): Always null to capture fresh from SDK (Issue #817)
+    //   - Prevents "No conversation found" crashes on resume with stale IDs
+    // For non-SDK agents (gemini, gemini-cli, openrouter): Load from database
+    //   - These agents don't get memorySessionId from API responses
+    //   - Must reuse existing ID to maintain observation history
+    const provider = this.getCurrentProvider();
+    const isNonSdkAgent = provider !== 'claude';
+    const memorySessionId = isNonSdkAgent && dbSession.memory_session_id
+      ? dbSession.memory_session_id
+      : null;
+
+    // LOG THIS AT INFO LEVEL TO DEBUG
+    logger.info('SESSION', `Provider-specific memorySessionId initialization`, {
+      sessionDbId,
+      provider,
+      isNonSdkAgent,
+      dbHasMemorySessionId: !!dbSession.memory_session_id,
+      dbMemorySessionId: dbSession.memory_session_id ? dbSession.memory_session_id.substring(0, 12) : 'null',
+      willLoadFromDb: isNonSdkAgent && !!dbSession.memory_session_id,
+      resultMemorySessionId: memorySessionId ? memorySessionId.substring(0, 12) : 'null'
+    });
+
     // Create active session
-    // CRITICAL: Do NOT load memorySessionId from database here (Issue #817)
-    // When creating a new in-memory session, any database memory_session_id is STALE
-    // because the SDK context was lost when the worker restarted. The SDK agent will
-    // capture a new memorySessionId on the first response and persist it.
-    // Loading stale memory_session_id causes "No conversation found" crashes on resume.
     session = {
       sessionDbId,
       contentSessionId: dbSession.content_session_id,
-      memorySessionId: null,  // Always start fresh - SDK will capture new ID
+      memorySessionId,  // Load from DB for non-SDK agents, null for Claude SDK
       project: dbSession.project,
       userPrompt,
       pendingMessages: [],
@@ -156,11 +210,13 @@ export class SessionManager {
       currentProvider: null  // Will be set when generator starts
     };
 
-    logger.debug('SESSION', 'Creating new session object (memorySessionId cleared to prevent stale resume)', {
+    logger.debug('SESSION', 'Creating new session object with provider-specific memorySessionId handling', {
       sessionDbId,
       contentSessionId: dbSession.content_session_id,
+      provider,
+      isNonSdkAgent,
       dbMemorySessionId: dbSession.memory_session_id || '(none in DB)',
-      memorySessionId: '(cleared - will capture fresh from SDK)',
+      memorySessionId: memorySessionId || (isNonSdkAgent ? '(will generate in startSession)' : '(will capture from SDK)'),
       lastPromptNumber: promptNumber || this.dbManager.getSessionStore().getPromptNumberFromUserPrompts(dbSession.content_session_id)
     });
 
