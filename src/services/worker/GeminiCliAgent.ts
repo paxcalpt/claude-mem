@@ -32,6 +32,8 @@ export class GeminiCliAgent {
   private dbManager: DatabaseManager;
   private sessionManager: SessionManager;
   private fallbackAgent: FallbackAgent | null = null;
+  // Track Gemini CLI session UUIDs for session reuse
+  private geminiSessionIds: Map<string, string> = new Map(); // memorySessionId -> gemini session_id
 
   constructor(dbManager: DatabaseManager, sessionManager: SessionManager) {
     this.dbManager = dbManager;
@@ -52,6 +54,34 @@ export class GeminiCliAgent {
    */
   async startSession(session: ActiveSession, worker?: WorkerRef): Promise<void> {
     try {
+      // Capture/generate memory session ID if not yet set
+      // Unlike SDKAgent which gets session_id from Claude SDK, Gemini CLI generates its own
+      if (!session.memorySessionId) {
+        // Use crypto.randomUUID() to generate a unique session ID
+        const { randomUUID } = await import('crypto');
+        session.memorySessionId = randomUUID();
+
+        // Persist to database for cross-restart recovery
+        this.dbManager.getSessionStore().updateMemorySessionId(
+          session.sessionDbId,
+          session.memorySessionId
+        );
+
+        // Verify the update by reading back from DB
+        const verification = this.dbManager.getSessionStore().getSessionById(session.sessionDbId);
+        const dbVerified = verification?.memory_session_id === session.memorySessionId;
+        logger.info('SESSION', `MEMORY_ID_GENERATED | sessionDbId=${session.sessionDbId} | memorySessionId=${session.memorySessionId} | dbVerified=${dbVerified}`, {
+          sessionId: session.sessionDbId,
+          memorySessionId: session.memorySessionId
+        });
+
+        if (!dbVerified) {
+          logger.error('SESSION', `MEMORY_ID_MISMATCH | sessionDbId=${session.sessionDbId} | expected=${session.memorySessionId} | got=${verification?.memory_session_id}`, {
+            sessionId: session.sessionDbId
+          });
+        }
+      }
+
       // Get Gemini CLI configuration
       const { cliPath, model } = this.getGeminiCliConfig();
 
@@ -71,10 +101,10 @@ export class GeminiCliAgent {
         // Add response to conversation history
         session.conversationHistory.push({ role: 'assistant', content: initResponse.content });
 
-        // Track token usage (Gemini CLI provides token counts)
+        // Track token usage (Gemini CLI provides accurate token counts)
         const tokensUsed = initResponse.tokensUsed || 0;
-        session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);  // Rough estimate
-        session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
+        session.cumulativeInputTokens += initResponse.inputTokens || 0;
+        session.cumulativeOutputTokens += initResponse.outputTokens || 0;
 
         // Process response using shared ResponseProcessor (no original timestamp for init - not from queue)
         await processAgentResponse(
@@ -133,8 +163,8 @@ export class GeminiCliAgent {
             session.conversationHistory.push({ role: 'assistant', content: obsResponse.content });
 
             tokensUsed = obsResponse.tokensUsed || 0;
-            session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);
-            session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
+            session.cumulativeInputTokens += obsResponse.inputTokens || 0;
+            session.cumulativeOutputTokens += obsResponse.outputTokens || 0;
           }
 
           // Process response using shared ResponseProcessor
@@ -170,8 +200,8 @@ export class GeminiCliAgent {
             session.conversationHistory.push({ role: 'assistant', content: summaryResponse.content });
 
             tokensUsed = summaryResponse.tokensUsed || 0;
-            session.cumulativeInputTokens += Math.floor(tokensUsed * 0.7);
-            session.cumulativeOutputTokens += Math.floor(tokensUsed * 0.3);
+            session.cumulativeInputTokens += summaryResponse.inputTokens || 0;
+            session.cumulativeOutputTokens += summaryResponse.outputTokens || 0;
           }
 
           // Process response using shared ResponseProcessor
@@ -222,6 +252,49 @@ export class GeminiCliAgent {
   }
 
   /**
+   * Truncate conversation history to prevent CLI argument overflow
+   * Implements sliding window: keeps most recent messages within size limits
+   */
+  private truncateHistory(
+    history: { role: 'user' | 'assistant'; content: string }[]
+  ): { role: 'user' | 'assistant'; content: string }[] {
+    const MAX_MESSAGES = 20;  // Configurable via settings in future
+    const MAX_CHARS = 50000;   // Prevent CLI arg overflow (OS limit ~128KB)
+
+    // Fast path: no truncation needed
+    if (history.length <= MAX_MESSAGES) {
+      const totalChars = history.reduce((sum, m) => sum + m.content.length, 0);
+      if (totalChars <= MAX_CHARS) {
+        return history;
+      }
+    }
+
+    // Sliding window: keep most recent messages
+    const truncated: typeof history = [];
+    let charCount = 0;
+
+    for (let i = history.length - 1; i >= 0; i--) {
+      const msg = history[i];
+      const msgChars = msg.content.length;
+
+      if (truncated.length >= MAX_MESSAGES || charCount + msgChars > MAX_CHARS) {
+        logger.warn('SDK', 'GeminiCliAgent context truncated', {
+          originalMessages: history.length,
+          keptMessages: truncated.length,
+          originalChars: history.reduce((s, m) => s + m.content.length, 0),
+          keptChars: charCount
+        });
+        break;
+      }
+
+      truncated.unshift(msg);
+      charCount += msgChars;
+    }
+
+    return truncated;
+  }
+
+  /**
    * Query Gemini CLI with retry logic for rate limits
    */
   private async queryGeminiCliWithRetry(
@@ -229,7 +302,7 @@ export class GeminiCliAgent {
     cliPath: string,
     model: string,
     maxRetries: number = 3
-  ): Promise<{ content: string; tokensUsed?: number }> {
+  ): Promise<{ content: string; tokensUsed?: number; inputTokens?: number; outputTokens?: number }> {
     for (let attempt = 0; attempt < maxRetries; attempt++) {
       try {
         return await this.queryGeminiCli(history, cliPath, model);
@@ -257,7 +330,7 @@ export class GeminiCliAgent {
     history: { role: 'user' | 'assistant'; content: string }[],
     cliPath: string,
     model: string
-  ): Promise<{ content: string; tokensUsed?: number }> {
+  ): Promise<{ content: string; tokensUsed?: number; inputTokens?: number; outputTokens?: number }> {
     const totalChars = history.reduce((sum, m) => sum + m.content.length, 0);
 
     logger.debug('SDK', `Querying Gemini CLI (${model})`, {
@@ -265,9 +338,12 @@ export class GeminiCliAgent {
       totalChars
     });
 
+    // Truncate history to prevent CLI argument overflow
+    const truncatedHistory = this.truncateHistory(history);
+
     // Build conversation format for prompt
     // Include full history for context
-    const conversationText = history
+    const conversationText = truncatedHistory
       .map(msg => {
         const role = msg.role === 'assistant' ? 'Assistant' : 'User';
         return `${role}: ${msg.content}`;
@@ -281,6 +357,17 @@ export class GeminiCliAgent {
         '--output-format', 'json',
         '-m', model
       ];
+
+      // TODO: Session resumption optimization
+      // The Gemini CLI supports --resume flag to continue previous sessions,
+      // which would enable automatic context caching and reduce token costs by 50-90%.
+      // Implementation requires:
+      // 1. Store session_id from first response in geminiSessionIds map
+      // 2. Use --resume flag with stored session on subsequent queries
+      // 3. Handle session expiration/cleanup
+      // However, --resume works with session index numbers (not UUIDs) which change
+      // as new sessions are created, making reliable session tracking complex.
+      // For now, rely on Gemini's implicit caching of similar prompts.
 
       const child = spawn(cliPath, args, {
         stdio: ['pipe', 'pipe', 'pipe']
@@ -339,15 +426,40 @@ export class GeminiCliAgent {
           // Extract response text and token stats
           const content = jsonResponse.response || '';
 
-          // Calculate token usage from stats if available
-          let tokensUsed: number | undefined;
-          if (jsonResponse.stats) {
-            const inputTokens = jsonResponse.stats.input_tokens || 0;
-            const outputTokens = jsonResponse.stats.output_tokens || 0;
-            tokensUsed = inputTokens + outputTokens;
+          // Store Gemini session_id for potential future session reuse
+          const geminiSessionId = jsonResponse.session_id;
+          if (geminiSessionId) {
+            logger.debug('SDK', 'Gemini CLI session created', { sessionId: geminiSessionId });
+            // Note: Currently not using session resumption due to complexity
+            // of tracking session indices vs UUIDs. Future enhancement.
           }
 
-          resolve({ content, tokensUsed });
+          // Calculate token usage from stats if available
+          let tokensUsed: number | undefined;
+          let inputTokens = 0;
+          let outputTokens = 0;
+
+          if (jsonResponse.stats) {
+            inputTokens = jsonResponse.stats.input_tokens ?? 0;
+            outputTokens = jsonResponse.stats.output_tokens ?? 0;
+            tokensUsed = inputTokens + outputTokens;
+
+            // Track cache hits if available (for monitoring optimization impact)
+            const cacheHits = jsonResponse.stats.cache_hits ?? 0;
+            const cachedTokens = jsonResponse.stats.cached_tokens ?? 0;
+
+            if (cacheHits > 0) {
+              const savingsPercent = tokensUsed > 0 ? Math.round((cachedTokens / tokensUsed) * 100) : 0;
+              logger.info('SDK', 'Gemini CLI cache hit', {
+                cacheHits,
+                cachedTokens,
+                totalTokens: tokensUsed,
+                savings: `${savingsPercent}%`
+              });
+            }
+          }
+
+          resolve({ content, tokensUsed, inputTokens, outputTokens });
         } catch (error) {
           logger.error('SDK', 'Failed to parse Gemini CLI JSON', { stdout: stdout.substring(0, 200) });
           reject(new Error(`Failed to parse Gemini CLI JSON: ${error instanceof Error ? error.message : String(error)}`));
