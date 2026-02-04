@@ -427,6 +427,16 @@ export class OpenRouterAgent {
     const content = data.choices[0].message.content;
     const tokensUsed = data.usage?.total_tokens;
 
+    // Debug: Count observation blocks in response to detect duplication issues
+    const obsCount = (content.match(/<observation>/g) || []).length;
+    if (obsCount > 1) {
+      logger.warn('SDK', 'Multiple observations in OpenRouter response - AI duplicating output', {
+        observationCount: obsCount,
+        contentLength: content.length,
+        firstObsPreview: content.substring(content.indexOf('<observation>'), content.indexOf('<observation>') + 150)
+      });
+    }
+
     // Log actual token usage for cost tracking
     if (tokensUsed) {
       const inputTokens = data.usage?.prompt_tokens || 0;

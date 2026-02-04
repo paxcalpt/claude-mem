@@ -533,6 +533,16 @@ export class GeminiCliAgent {
             }
           }
 
+          // Debug: Count observation blocks in response to detect duplication issues
+          const obsCount = (content.match(/<observation>/g) || []).length;
+          if (obsCount > 1) {
+            logger.warn('SDK', 'Multiple observations in Gemini CLI response - AI duplicating output', {
+              observationCount: obsCount,
+              contentLength: content.length,
+              firstObsPreview: content.substring(content.indexOf('<observation>'), content.indexOf('<observation>') + 150)
+            });
+          }
+
           resolve({ content, tokensUsed, inputTokens, outputTokens });
         } catch (error) {
           logger.error('SDK', 'Failed to parse Gemini CLI JSON', { stdout: stdout.substring(0, 200) });

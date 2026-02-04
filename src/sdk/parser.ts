@@ -32,6 +32,7 @@ export interface ParsedSummary {
  */
 export function parseObservations(text: string, correlationId?: string): ParsedObservation[] {
   const observations: ParsedObservation[] = [];
+  const seen = new Set<string>();  // Track observation fingerprints for deduplication
 
   // Match <observation>...</observation> blocks (non-greedy)
   const observationRegex = /<observation>([\s\S]*?)<\/observation>/g;
@@ -83,7 +84,8 @@ export function parseObservations(text: string, correlationId?: string): ParsedO
       });
     }
 
-    observations.push({
+    // Create observation object
+    const observation: ParsedObservation = {
       type: finalType,
       title,
       subtitle,
@@ -92,7 +94,31 @@ export function parseObservations(text: string, correlationId?: string): ParsedO
       concepts: cleanedConcepts,
       files_read,
       files_modified
+    };
+
+    // Deduplication: Create a fingerprint based on key fields
+    // This prevents agent bugs or response issues from creating duplicate observations
+    const fingerprint = JSON.stringify({
+      type: observation.type,
+      title: observation.title,
+      narrative: observation.narrative,
+      facts: observation.facts.slice().sort(),  // Sort for consistent comparison
+      files_read: observation.files_read.slice().sort(),
+      files_modified: observation.files_modified.slice().sort()
     });
+
+    if (seen.has(fingerprint)) {
+      logger.warn('PARSER', 'Duplicate observation detected and skipped', {
+        correlationId,
+        title: observation.title,
+        type: observation.type,
+        duplicateCount: observations.length + 1
+      });
+      continue;  // Skip this duplicate
+    }
+
+    seen.add(fingerprint);
+    observations.push(observation);
   }
 
   return observations;
