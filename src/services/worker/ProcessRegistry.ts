@@ -236,14 +236,43 @@ export function createPidCapturingSpawn(sessionDbId: number) {
 /**
  * Start the orphan reaper interval
  * Returns cleanup function to stop the interval
+ *
+ * @param getActiveSessionIds Function to get currently active session IDs
+ * @param getDatabaseManager Function to get DatabaseManager for message cleanup
+ * @param intervalMs Interval between reaper runs (default: 5 minutes)
+ * @param messageTimeoutMs Messages older than this are marked as failed (default: 30 minutes)
  */
-export function startOrphanReaper(getActiveSessionIds: () => Set<number>, intervalMs: number = 5 * 60 * 1000): () => void {
+export function startOrphanReaper(
+  getActiveSessionIds: () => Set<number>,
+  getDatabaseManager?: () => any,
+  intervalMs: number = 5 * 60 * 1000,
+  messageTimeoutMs: number = 30 * 60 * 1000
+): () => void {
   const interval = setInterval(async () => {
     try {
+      // Clean up orphaned processes
       const activeIds = getActiveSessionIds();
       const killed = await reapOrphanedProcesses(activeIds);
       if (killed > 0) {
         logger.info('PROCESS', `Reaper cleaned up ${killed} orphaned processes`, { killed });
+      }
+
+      // Clean up old pending messages (prevent stuck queue accumulation)
+      if (getDatabaseManager) {
+        try {
+          const { PendingMessageStore } = await import('../sqlite/PendingMessageStore.js');
+          const dbManager = getDatabaseManager();
+          const pendingStore = new PendingMessageStore(dbManager.getSessionStore().db, 3);
+          const failedCount = pendingStore.failOldPendingMessages(messageTimeoutMs);
+          if (failedCount > 0) {
+            logger.warn('QUEUE', `Reaper marked ${failedCount} old pending messages as failed`, {
+              failedCount,
+              thresholdMinutes: Math.floor(messageTimeoutMs / 60000)
+            });
+          }
+        } catch (error) {
+          logger.error('QUEUE', 'Failed to clean up old pending messages', {}, error as Error);
+        }
       }
     } catch (error) {
       logger.error('PROCESS', 'Reaper error', {}, error as Error);

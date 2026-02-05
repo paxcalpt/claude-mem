@@ -318,14 +318,19 @@ export class WorkerService {
       this.resolveInitialization();
       logger.info('SYSTEM', 'Background initialization complete');
 
-      // Start orphan reaper to clean up zombie processes (Issue #737)
-      this.stopOrphanReaper = startOrphanReaper(() => {
-        const activeIds = new Set<number>();
-        for (const [id] of this.sessionManager['sessions']) {
-          activeIds.add(id);
-        }
-        return activeIds;
-      });
+      // Start orphan reaper to clean up zombie processes and old pending messages
+      this.stopOrphanReaper = startOrphanReaper(
+        () => {
+          const activeIds = new Set<number>();
+          for (const [id] of this.sessionManager['sessions']) {
+            activeIds.add(id);
+          }
+          return activeIds;
+        },
+        () => this.dbManager,  // Provide database access for message cleanup
+        5 * 60 * 1000,         // Check every 5 minutes
+        30 * 60 * 1000         // Fail messages older than 30 minutes
+      );
       logger.info('SYSTEM', 'Started orphan reaper (runs every 5 minutes)');
 
       // Auto-recover orphaned queues (fire-and-forget with error logging)

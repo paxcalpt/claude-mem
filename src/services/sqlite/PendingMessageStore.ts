@@ -342,6 +342,23 @@ export class PendingMessageStore {
   }
 
   /**
+   * Mark old pending messages as failed (timeout cleanup)
+   * Used by orphan reaper to prevent stuck messages from accumulating
+   * @param thresholdMs Messages older than this are marked as failed
+   * @returns Number of messages marked as failed
+   */
+  failOldPendingMessages(thresholdMs: number): number {
+    const cutoff = Date.now() - thresholdMs;
+    const stmt = this.db.prepare(`
+      UPDATE pending_messages
+      SET status = 'failed', failed_at_epoch = ?
+      WHERE status = 'pending' AND created_at_epoch < ?
+    `);
+    const result = stmt.run(Date.now(), cutoff);
+    return result.changes;
+  }
+
+  /**
    * Clear all failed messages from the queue
    * @returns Number of messages deleted
    */
