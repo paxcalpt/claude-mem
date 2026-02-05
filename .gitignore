@@ -31,3 +31,7 @@ src/ui/viewer.html
 # Prevent other malformed path directories
 http*/
 https*/
+
+# Claude-mem generated context files
+CLAUDE.md
+**/CLAUDE.md
