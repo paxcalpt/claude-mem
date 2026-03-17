@@ -172,7 +172,7 @@ export class SessionManager {
     // Determine memorySessionId handling based on provider
     // For Claude SDK (provider='claude'): Always null to capture fresh from SDK (Issue #817)
     //   - Prevents "No conversation found" crashes on resume with stale IDs
-    // For non-SDK agents (gemini, gemini-cli, openrouter): Load from database
+    // For non-SDK agents (gemini, openrouter): Load from database
     //   - These agents don't get memorySessionId from API responses
     //   - Must reuse existing ID to maintain observation history
     const provider = this.getCurrentProvider();
