@@ -403,8 +403,6 @@ export class OpenRouterAgent {
     const content = data.choices[0].message.content;
     const tokensUsed = data.usage?.total_tokens;
 
-
-
     // Log actual token usage for cost tracking
     if (tokensUsed) {
       const inputTokens = data.usage?.prompt_tokens || 0;
