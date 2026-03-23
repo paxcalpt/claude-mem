@@ -2,6 +2,37 @@
 
 All notable changes to claude-mem.
 
+## [v10.6.2] - 2026-03-21
+
+## fix: Activity spinner stuck spinning forever
+
+The viewer UI activity spinner would spin indefinitely because `isAnySessionProcessing()` queried all pending/processing messages in the database globally — including orphaned messages from dead sessions that no generator would ever process. These orphans caused `isProcessing=true` forever.
+
+### Changes
+
+- Scoped `isAnySessionProcessing()` and `hasPendingMessages()` to only check sessions in the active in-memory Map, so orphaned DB messages no longer affect the spinner
+- Added `terminateSession()` method enforcing a restart-or-terminate invariant — every generator exit must either restart or fully clean up
+- Fixed 3 zombie paths in the `.finally()` handler that previously left sessions alive in memory with no generator running
+- Fixed idle-timeout race condition where fresh messages arriving between idle abort and cleanup could be silently dropped
+- Removed redundant bare `isProcessing: true` broadcast and eliminated double-iteration in `broadcastProcessingStatus()`
+- Replaced inline `require()` with proper accessor via `sessionManager.getPendingMessageStore()`
+- Added 8 regression tests for session termination invariant
+
+## [v10.6.1] - 2026-03-18
+
+### New Features
+- **Timeline Report Skill** — New `/timeline-report` skill generates narrative "Journey Into [Project]" reports from claude-mem's development history with token-aware economics
+- **Git Worktree Detection** — Timeline report automatically detects git worktrees and uses parent project as data source
+- **Compressed Context Output** — Markdown context injection compressed ~53% (tables → compact flat lines), reducing token overhead in session starts
+- **Full Observation Fetch** — Added `full=true` parameter to `/api/context/inject` for fetching all observations
+
+### Improvements
+- Split `TimelineRenderer` into separate markdown/color rendering paths
+- Fixed timestamp ditto marker leaking across session summary boundaries
+
+### Security
+- Removed arbitrary file write vulnerability (`dump_to_file` parameter)
+
 ## [v10.6.0] - 2026-03-18
 
 ## OpenClaw: System prompt context injection
@@ -1079,42 +1110,4 @@ This release adds the `/do` and `/make-plan` development commands to the plugin 
 ### Full Changelog
 
 https://github.com/thedotmack/claude-mem/compare/v9.0.3...v9.0.4
-
-## [v9.0.3] - 2026-01-10
-
-## Bug Fixes
-
-### Hook Framework JSON Status Output (#655)
-
-Fixed an issue where the worker service startup wasn't producing proper JSON status output for the Claude Code hook framework. This caused hooks to appear stuck or unresponsive during worker initialization.
-
-**Changes:**
-- Added `buildStatusOutput()` function for generating structured JSON status output
-- Worker now outputs JSON with `status`, `message`, and `continue` fields on stdout
-- Proper exit code 0 ensures Windows Terminal compatibility (no tab accumulation)
-- `continue: true` flag ensures Claude Code continues processing after hook execution
-
-**Technical Details:**
-- Extracted status output generation into a pure, testable function
-- Added comprehensive test coverage in `tests/infrastructure/worker-json-status.test.ts`
-- 23 passing tests covering unit, CLI integration, and hook framework compatibility
-
-## Housekeeping
-
-- Removed obsolete error handling baseline file
-
-## [v9.0.2] - 2026-01-10
-
-## Bug Fixes
-
-- **Windows Terminal Tab Accumulation (#625, #628)**: Fixed terminal tab accumulation on Windows by implementing graceful exit strategy. All expected failure scenarios (port conflicts, version mismatches, health check timeouts) now exit with code 0 instead of code 1.
-- **Windows 11 Compatibility (#625)**: Replaced deprecated WMIC commands with PowerShell `Get-Process` and `Get-CimInstance` for process enumeration. WMIC is being removed from Windows 11.
-
-## Maintenance
-
-- **Removed Obsolete CLAUDE.md Files**: Cleaned up auto-generated CLAUDE.md files from `~/.claude/plans/` and `~/.claude/plugins/marketplaces/` directories.
-
----
-
-**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v9.0.1...v9.0.2
 
