@@ -38,3 +38,12 @@ src/ui/viewer.html
 
 # Local contribution analysis (not part of upstream)
 CONTRIB_NOTES.md
+
+# claude-mem auto-generated context files (ONLY paths upstream doesn't track).
+# DO NOT add a blanket **/CLAUDE.md rule — upstream deliberately tracks ~30
+# nested CLAUDE.md docs under src/, plugin/, tests/, etc. If new strays appear,
+# add their exact path here rather than generalising the pattern.
+src/sdk/CLAUDE.md
+src/services/worker/http/routes/CLAUDE.md
+src/ui/viewer/CLAUDE.md
+src/ui/viewer/components/CLAUDE.md
