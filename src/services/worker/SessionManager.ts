@@ -98,6 +98,9 @@ export class SessionManager {
         });
         session.project = dbSession.project;
       }
+      if (dbSession.platform_source && dbSession.platform_source !== session.platformSource) {
+        session.platformSource = dbSession.platform_source;
+      }
 
       // For non-SDK agents, ensure memorySessionId matches database
       // This handles both null and wrong/stale UUIDs from crash loops
@@ -198,6 +201,7 @@ export class SessionManager {
       contentSessionId: dbSession.content_session_id,
       memorySessionId,  // Load from DB for non-SDK agents, null for Claude SDK
       project: dbSession.project,
+      platformSource: dbSession.platform_source,
       userPrompt,
       pendingMessages: [],
       abortController: new AbortController(),
