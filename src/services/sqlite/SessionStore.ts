@@ -65,7 +65,6 @@ export class SessionStore {
     this.addSessionCustomTitleColumn();
     this.addSessionPlatformSourceColumn();
     this.addObservationModelColumns();
-    this.ensureReadCountColumns();
   }
 
   /**
@@ -849,35 +848,6 @@ export class SessionStore {
       this.db.run('PRAGMA foreign_keys = ON');
       throw error;
     }
-  }
-
-  // ─── LOCAL FORK MIGRATIONS ────────────────────────────────────────────────
-  // Upstream uses sequential integers (currently ~23).
-  // All local/custom migrations use versions 10000+ to permanently avoid
-  // collisions regardless of how many upstream migrations are added.
-  // Next local migration: 10002
-
-  /**
-   * Add read_count and last_read_at columns to observations (local migration 10001)
-   * Tracks how frequently each observation is fetched/read by Claude.
-   */
-  private ensureReadCountColumns(): void {
-    // Also clean up the accidental version 24 entry if it exists from a prior attempt
-    this.db.prepare('DELETE FROM schema_versions WHERE version = 24').run();
-
-    const applied = this.db.prepare('SELECT version FROM schema_versions WHERE version = ?').get(10001) as SchemaVersion | undefined;
-    if (applied) return;
-
-    const cols = this.db.query('PRAGMA table_info(observations)').all() as TableColumnInfo[];
-    if (!cols.some(c => c.name === 'read_count')) {
-      this.db.run('ALTER TABLE observations ADD COLUMN read_count INTEGER DEFAULT 0');
-    }
-    if (!cols.some(c => c.name === 'last_read_at')) {
-      this.db.run('ALTER TABLE observations ADD COLUMN last_read_at INTEGER');
-    }
-
-    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(10001, new Date().toISOString());
-    logger.debug('DB', 'Added read_count and last_read_at columns to observations (local migration 10001)');
   }
 
   /**
@@ -1672,23 +1642,9 @@ export class SessionStore {
       VALUES (?, NULL, ?, ?, ?, ?, ?, ?, 'active')
     `).run(contentSessionId, project, normalizedPlatformSource, userPrompt, resolved.customTitle || null, now.toISOString(), nowEpoch);
 
-    // Fetch existing session with project
-    const row = this.db.prepare('SELECT id, project FROM sdk_sessions WHERE content_session_id = ?')
-      .get(contentSessionId) as { id: number; project: string };
-
-    // Update project if it changed (handles sessions created with empty project)
-    // Only update if new project is non-empty and different from current
-    if (project && project !== row.project) {
-      this.db.prepare('UPDATE sdk_sessions SET project = ? WHERE id = ?')
-        .run(project, row.id);
-
-      logger.info('SESSION', 'Updated project for existing session', {
-        sessionId: row.id,
-        oldProject: row.project || '(empty)',
-        newProject: project
-      });
-    }
-
+    // Return new ID
+    const row = this.db.prepare('SELECT id FROM sdk_sessions WHERE content_session_id = ?')
+      .get(contentSessionId) as { id: number };
     return row.id;
   }
 

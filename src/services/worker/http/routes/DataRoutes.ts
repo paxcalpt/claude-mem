@@ -18,7 +18,6 @@ import { SessionManager } from '../../SessionManager.js';
 import { SSEBroadcaster } from '../../SSEBroadcaster.js';
 import type { WorkerService } from '../../../worker-service.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
-import { incrementReadCount, getMostReadObservations } from '../../../sqlite/observations/analytics.js';
 import { normalizePlatformSource } from '../../../../shared/platform-source.js';
 import { getObservationsByFilePath } from '../../../sqlite/observations/get.js';
 
@@ -64,9 +63,6 @@ export class DataRoutes extends BaseRouteHandler {
 
     // Import endpoint
     app.post('/api/import', this.handleImport.bind(this));
-
-    // Analytics endpoints
-    app.get('/api/analytics/most-read', this.handleMostRead.bind(this));
   }
 
   /**
@@ -112,7 +108,6 @@ export class DataRoutes extends BaseRouteHandler {
       return;
     }
 
-    incrementReadCount(store.db, [id]);
     res.json(observation);
   });
 
@@ -170,9 +165,6 @@ export class DataRoutes extends BaseRouteHandler {
     const store = this.dbManager.getSessionStore();
     const observations = store.getObservationsByIds(ids, { orderBy, limit, project });
 
-    if (observations.length > 0) {
-      incrementReadCount(store.db, observations.map(o => o.id));
-    }
     res.json(observations);
   });
 
@@ -329,18 +321,6 @@ export class DataRoutes extends BaseRouteHandler {
     const activeSessions = this.sessionManager.getActiveSessionCount();
 
     res.json({ status: 'ok', isProcessing, queueDepth, activeSessions });
-  });
-
-  /**
-   * Get most-read observations ordered by read_count
-   * GET /api/analytics/most-read?limit=20&project=...
-   */
-  private handleMostRead = this.wrapHandler((req: Request, res: Response): void => {
-    const limit = Math.min(parseInt(req.query.limit as string, 10) || 20, 100);
-    const project = req.query.project as string | undefined;
-    const db = this.dbManager.getSessionStore().db;
-    const rows = getMostReadObservations(db, limit, project);
-    res.json({ observations: rows, total: rows.length });
   });
 
   /**
